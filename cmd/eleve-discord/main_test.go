@@ -533,10 +533,110 @@ func TestUsageDoesNotLeakToken(t *testing.T) {
 		{},
 		{"plan", "-f", validSpec, "sekrit-token"}, // token pasted as an argument
 		{"sekrit-token"},
+		// The flag package would echo these itself.
+		{"plan", "--prune=sekrit-token"}, // invalid boolean value "sekrit-token" for -prune
+		{"plan", "-sekrit-token"},        // flag provided but not defined: -sekrit-token
+		{"apply", "--sekrit-token"},
+		{"validate", "-f"},
 	} {
 		_, stdout, stderr := h.run(args...)
 		if strings.Contains(stdout+stderr, "sekrit") {
 			t.Errorf("%v: output leaked the token: %q", args, stdout+stderr)
+		}
+	}
+}
+
+// shapedToken is a fake: it only has the shape of a Discord bot token.
+const shapedToken = "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ" + ".GabCdE.abcdefghijklmnopqrstuvwxyz0"
+
+// A token pasted into a flag is hidden even when DISCORD_BOT_TOKEN is unset,
+// because redact recognises the shape of a bot token. The env-set case is
+// covered by TestUsageDoesNotLeakToken.
+func TestFlagErrorsDoNotLeakShapedToken(t *testing.T) {
+	for _, envToken := range []string{"", shapedToken} {
+		h := newHarness(t)
+		h.token = envToken
+		for _, args := range [][]string{
+			{"plan", "--prune=" + shapedToken},
+			{"plan", "-" + shapedToken},
+			{"apply", "--" + shapedToken},
+			{"apply", "-f", validSpec, shapedToken},
+			{shapedToken},
+		} {
+			code, stdout, stderr := h.run(args...)
+			if code != 1 {
+				t.Errorf("env=%q %v: code = %d, want 1", envToken, args, code)
+			}
+			out := stdout + stderr
+			if strings.Contains(out, shapedToken) || strings.Contains(out, "abcdefghijklmnopqrstuvwxyz0") {
+				t.Errorf("env=%q %v: output leaked the token: %q", envToken, args, out)
+			}
+			if len(args) > 1 && !strings.Contains(stderr, "***") {
+				t.Errorf("env=%q %v: stderr = %q, want the token replaced by ***", envToken, args, stderr)
+			}
+		}
+		if h.dials != 0 {
+			t.Errorf("dialed %d times on a usage error", h.dials)
+		}
+	}
+}
+
+func TestFlagErrorIsReportedOnceWithUsage(t *testing.T) {
+	h := newHarness(t)
+	code, stdout, stderr := h.run("plan", "--prune=maybe")
+	if code != 1 || stdout != "" {
+		t.Fatalf("code=%d stdout=%q, want 1 and empty stdout", code, stdout)
+	}
+	if !strings.HasPrefix(stderr, "error: invalid boolean value \"maybe\" for -prune") {
+		t.Errorf("stderr = %q, want it to start with the flag error", stderr)
+	}
+	if !strings.Contains(stderr, "usage: eleve-discord") || strings.Count(stderr, "invalid boolean value") != 1 {
+		t.Errorf("stderr = %q, want the error once, then the usage", stderr)
+	}
+}
+
+func TestHelpPrintsUsageToStdout(t *testing.T) {
+	for _, args := range [][]string{
+		{"plan", "-h"}, {"plan", "--help"}, {"apply", "-help"}, {"validate", "-h"}, {"invite-url", "--help"},
+	} {
+		h := newHarness(t)
+		code, stdout, stderr := h.run(args...)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "usage: eleve-discord") {
+			t.Errorf("%v: code=%d stdout=%q stderr=%q, want 0, usage on stdout, empty stderr", args, code, stdout, stderr)
+		}
+		if h.dials != 0 {
+			t.Errorf("%v: dialed on --help", args)
+		}
+	}
+}
+
+func TestRedactShape(t *testing.T) {
+	const inviteURL = "https://discord.com/oauth2/authorize?client_id=123456789012345678&permissions=1099883998294&scope=bot"
+	redacted := []struct{ name, msg, token, want string }{
+		{"shaped token with no env token", "bad flag -" + shapedToken, "", "bad flag ***"}, // the leading "-" is a legal token character, so it goes too
+		{"shaped token inside quotes", `invalid value "` + shapedToken + `" for -prune`, "", `invalid value "***" for -prune`},
+		{"url-safe characters", "x MTIzNDU2Nzg5MDEyMzQ1Njc4OQ" + ".G_b-dE.abc_efghijklmnopqrstuvwxyz0 y", "", "x *** y"},
+		{"exact token and shaped token together", "sekrit " + shapedToken, "sekrit", "*** ***"},
+		{"seven-character middle part", "MTIzNDU2Nzg5MDEyMzQ1Njc4OQ" + ".GabCdEf.abcdefghijklmnopqrstuvwxyz0", "", "***"},
+	}
+	for _, c := range redacted {
+		if got := redact(c.msg, c.token); got != c.want {
+			t.Errorf("%s: redact(%q, %q) = %q, want %q", c.name, c.msg, c.token, got, c.want)
+		}
+	}
+	untouched := []string{
+		"plain words and a sentence.",
+		"error: unknown command \"frobnicate\"",
+		inviteURL,
+		"role 1234567890.123456.123456789012345678",
+		"internal/spec/testdata/content/constitution.md",
+		"discord: update @everyone: cannot change @everyone permissions: bit 1<<47",
+		"v1.2.3",
+		"AaaaaaaaaaaaaaaaaaaaaaaaaAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAaaaaaaaaa", // long, no dots
+	}
+	for _, msg := range untouched {
+		if got := redact(msg, ""); got != msg {
+			t.Errorf("redact(%q) = %q, want it unchanged", msg, got)
 		}
 	}
 }

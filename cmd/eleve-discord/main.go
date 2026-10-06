@@ -6,11 +6,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -59,12 +61,18 @@ plan and apply read the bot token from the ` + tokenEnv + ` environment variable
 Without --prune nothing is ever deleted.
 `
 
-// redact replaces every occurrence of the token in msg with ***.
+// botTokenShape matches anything shaped like a Discord bot token (three
+// base64url parts: user ID, timestamp, HMAC), so a token that was pasted by
+// mistake is hidden even when DISCORD_BOT_TOKEN is not set.
+var botTokenShape = regexp.MustCompile(`[A-Za-z0-9_-]{23,28}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}`)
+
+// redact replaces every occurrence of the token (when one is set) and anything
+// shaped like a Discord bot token in msg with ***.
 func redact(msg, token string) string {
-	if token == "" {
-		return msg
+	if token != "" {
+		msg = strings.ReplaceAll(msg, token, "***")
 	}
-	return strings.ReplaceAll(msg, token, "***")
+	return botTokenShape.ReplaceAllString(msg, "***")
 }
 
 // cli carries what one invocation needs.
@@ -105,19 +113,29 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer, di
 	}
 }
 
-// parse parses a subcommand's flags. It returns false (after reporting) when
-// the flags are bad or positional arguments remain.
-func (c *cli) parse(fs *flag.FlagSet, args []string) bool {
-	fs.SetOutput(c.stderr)
+// parse parses a subcommand's flags. It returns ok = false, with the exit code
+// to use, when the caller should stop: -h/--help (usage on stdout, exit 0), bad
+// flags or leftover positional arguments (reported on stderr, exit 1).
+//
+// The flag package would echo a bad flag or value unredacted ("flag provided
+// but not defined: -<token>"), so its own output is discarded and the error is
+// printed here, through redact.
+func (c *cli) parse(fs *flag.FlagSet, args []string) (ok bool, code int) {
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
-		return false
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(c.stdout, usageText)
+			return false, 0
+		}
+		fmt.Fprintf(c.stderr, "error: %s\n\n%s", redact(err.Error(), c.getenv(tokenEnv)), redact(usageText, c.getenv(tokenEnv)))
+		return false, 1
 	}
 	if fs.NArg() > 0 {
 		// The argument is echoed back, so scrub it in case it is the token.
 		fmt.Fprintf(c.stderr, "error: %s: unexpected argument %q\n", fs.Name(), redact(fs.Arg(0), c.getenv(tokenEnv)))
-		return false
+		return false, 1
 	}
-	return true
+	return true, 0
 }
 
 // load reads and checks the spec and builds the desired state.
@@ -136,8 +154,8 @@ func (c *cli) load(path string) (*spec.Spec, reconcile.Desired, error) {
 func (c *cli) validate(args []string) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	file := fs.String("f", defaultSpec, "spec file")
-	if !c.parse(fs, args) {
-		return 1
+	if ok, code := c.parse(fs, args); !ok {
+		return code
 	}
 	if _, _, err := c.load(*file); err != nil {
 		return c.fail(err)
@@ -166,8 +184,8 @@ func (c *cli) planOrApply(name string, args []string) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	file := fs.String("f", defaultSpec, "spec file")
 	prune := fs.Bool("prune", false, "also delete roles and channels the spec does not mention")
-	if !c.parse(fs, args) {
-		return 1
+	if ok, code := c.parse(fs, args); !ok {
+		return code
 	}
 
 	s, d, err := c.load(*file)
@@ -211,8 +229,8 @@ func (c *cli) planOrApply(name string, args []string) int {
 func (c *cli) inviteURL(args []string) int {
 	fs := flag.NewFlagSet("invite-url", flag.ContinueOnError)
 	clientID := fs.String("client-id", "", "the bot application's client ID")
-	if !c.parse(fs, args) {
-		return 1
+	if ok, code := c.parse(fs, args); !ok {
+		return code
 	}
 	if *clientID == "" {
 		return c.fail(fmt.Errorf("invite-url: -client-id is required"))
