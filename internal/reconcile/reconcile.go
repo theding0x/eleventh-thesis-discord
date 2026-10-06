@@ -159,26 +159,28 @@ func Reconcile(d Desired, g model.Guild, prune bool) Plan {
 
 	roles, channels := unmanaged(d, g)
 	for _, r := range roles {
-		p.Unmanaged = append(p.Unmanaged, "role "+r.Name)
+		p.Unmanaged = append(p.Unmanaged, "role "+r.Name+r.suffix())
 	}
 	for _, c := range channels {
-		p.Unmanaged = append(p.Unmanaged, channelLabel(c))
+		p.Unmanaged = append(p.Unmanaged, channelLabel(c.Channel)+c.suffix())
 	}
 
 	if prune {
 		// Channels first, then categories (which must be empty), then roles.
+		// The delete actions carry the observed objects, so a duplicate is
+		// deleted by ID and never confused with the managed object.
 		for _, c := range channels {
 			if c.Type != model.Category {
-				p.Actions = append(p.Actions, Action{Kind: DeleteChannel, Channel: model.Channel{Name: c.Name, Type: c.Type}})
+				p.Actions = append(p.Actions, Action{Kind: DeleteChannel, Channel: c.Channel})
 			}
 		}
 		for _, c := range channels {
 			if c.Type == model.Category {
-				p.Actions = append(p.Actions, Action{Kind: DeleteChannel, Channel: model.Channel{Name: c.Name, Type: c.Type}})
+				p.Actions = append(p.Actions, Action{Kind: DeleteChannel, Channel: c.Channel})
 			}
 		}
 		for _, r := range roles {
-			p.Actions = append(p.Actions, Action{Kind: DeleteRole, Role: model.Role{Name: r.Name}})
+			p.Actions = append(p.Actions, Action{Kind: DeleteRole, Role: r.Role})
 		}
 	}
 	return p
@@ -234,7 +236,9 @@ func reconcileRoles(d Desired, g model.Guild) []Action {
 // roleOrderDrifted reports whether the roles directly below the provisioner
 // are not the spec's roles in spec order. Roles managed by integrations and the
 // provisioner itself are left out: they are never repositioned, so counting
-// them would make every run reorder.
+// them would make every run reorder. So are later duplicates of a spec role
+// name (the first observed one is the managed one), which are reported as
+// unmanaged instead.
 func roleOrderDrifted(d Desired, g model.Guild) bool {
 	provPos := math.MaxInt
 	for _, r := range g.Roles {
@@ -244,9 +248,16 @@ func roleOrderDrifted(d Desired, g model.Guild) bool {
 		}
 	}
 
+	wanted := make(map[string]bool, len(d.Roles))
+	for _, r := range d.Roles {
+		wanted[r.Name] = true
+	}
+	seen := make(map[string]bool, len(d.Roles))
 	var below []model.Role
 	for _, r := range g.Roles {
-		if r.Managed || r.Name == d.ProvisionerRole || r.Position >= provPos {
+		duplicate := wanted[r.Name] && seen[r.Name]
+		seen[r.Name] = true
+		if r.Managed || duplicate || r.Name == d.ProvisionerRole || r.Position >= provPos {
 			continue
 		}
 		below = append(below, r)
@@ -274,29 +285,101 @@ type channelKey struct {
 	name string
 }
 
-// reconcileChannels creates missing categories and channels and updates
-// drifted ones. d.Channels already lists categories first.
-func reconcileChannels(d Desired, g model.Guild) []Action {
-	observed := make(map[channelKey]model.Channel, len(g.Channels))
-	for _, c := range g.Channels {
+// managedChannels maps each wanted (type, name) to the index in g.Channels of
+// the observed channel that is managed: the first one in observed order. Later
+// channels with the same key are duplicates.
+func managedChannels(d Desired, g model.Guild) map[channelKey]int {
+	wanted := make(map[channelKey]bool, len(d.Channels))
+	for _, c := range d.Channels {
+		wanted[channelKey{c.Type, c.Name}] = true
+	}
+	first := make(map[channelKey]int, len(d.Channels))
+	for i, c := range g.Channels {
 		k := channelKey{c.Type, c.Name}
-		if _, ok := observed[k]; !ok {
-			observed[k] = c
+		if _, ok := first[k]; ok || !wanted[k] {
+			continue
+		}
+		first[k] = i
+	}
+	return first
+}
+
+type siblingGroup struct {
+	category bool
+	parent   string
+}
+
+// siblingRanks returns two ranks for the managed channels that already sit
+// under their desired parent: obs is the rank of each (by index into
+// g.Channels) among those siblings in the order Discord shows them (observed
+// Position, then observed order), and want is the rank of each (by key) among
+// the same siblings in the desired order.
+//
+// Only these channels take part, so a position is reported as drift only when
+// the managed siblings are in a different relative order. An unmanaged stray or
+// duplicate, a channel still to be created and a channel that is under the
+// wrong parent (reported as a parent change) don't shift anyone else's rank.
+func siblingRanks(d Desired, g model.Guild, managed map[channelKey]int) (obs map[int]int, want map[channelKey]int) {
+	inPlace := make(map[int]bool, len(managed))
+	for _, w := range d.Channels {
+		k := channelKey{w.Type, w.Name}
+		if i, ok := managed[k]; ok && g.Channels[i].Parent == w.Parent {
+			inPlace[i] = true
 		}
 	}
 
+	observed := map[siblingGroup][]int{}
+	for i, c := range g.Channels {
+		if inPlace[i] {
+			k := siblingGroup{c.Type == model.Category, c.Parent}
+			observed[k] = append(observed[k], i)
+		}
+	}
+	obs = make(map[int]int, len(inPlace))
+	for _, idxs := range observed {
+		sort.SliceStable(idxs, func(a, b int) bool { return g.Channels[idxs[a]].Position < g.Channels[idxs[b]].Position })
+		for rank, i := range idxs {
+			obs[i] = rank
+		}
+	}
+
+	want = make(map[channelKey]int, len(inPlace))
+	next := map[siblingGroup]int{}
+	for _, w := range d.Channels { // desired order, so the ranks follow it
+		k := channelKey{w.Type, w.Name}
+		if i, ok := managed[k]; ok && inPlace[i] {
+			grp := siblingGroup{w.Type == model.Category, w.Parent}
+			want[k] = next[grp]
+			next[grp]++
+		}
+	}
+	return obs, want
+}
+
+// reconcileChannels creates missing categories and channels and updates
+// drifted ones. d.Channels already lists categories first.
+//
+// Position is compared as relative order among the managed siblings (see
+// siblingRanks), and only when the parent already matches: a channel that has
+// to move is re-ranked by the move itself. The update action still carries the
+// desired Position.
+func reconcileChannels(d Desired, g model.Guild) []Action {
+	managed := managedChannels(d, g)
+	obsRank, wantRank := siblingRanks(d, g, managed)
+
 	var actions []Action
 	for _, want := range d.Channels {
-		have, ok := observed[channelKey{want.Type, want.Name}]
+		key := channelKey{want.Type, want.Name}
+		idx, ok := managed[key]
 		if !ok {
 			actions = append(actions, Action{Kind: CreateChannel, Channel: want})
 			continue
 		}
+		have := g.Channels[idx]
 		var changes []string
 		if have.Parent != want.Parent {
 			changes = append(changes, "parent")
-		}
-		if have.Position != want.Position {
+		} else if obsRank[idx] != wantRank[key] {
 			changes = append(changes, "position")
 		}
 		if want.Type == model.Text && have.Topic != want.Topic {
@@ -334,30 +417,66 @@ func sortedOverwrites(in []model.Overwrite) []model.Overwrite {
 	return out
 }
 
-// unmanaged returns the observed roles and channels the spec doesn't mention,
-// in observed order. The provisioner role and integration-managed roles are
-// never unmanaged.
-func unmanaged(d Desired, g model.Guild) ([]model.Role, []model.Channel) {
-	wantRole := make(map[string]bool, len(d.Roles)+1)
-	wantRole[d.ProvisionerRole] = true
+// unmanagedRole is an observed role the spec doesn't manage. duplicate marks a
+// later role that shares its name with a managed one.
+type unmanagedRole struct {
+	model.Role
+	duplicate bool
+}
+
+func (r unmanagedRole) suffix() string { return dupSuffix(r.duplicate) }
+
+// unmanagedChannel is the channel counterpart of unmanagedRole.
+type unmanagedChannel struct {
+	model.Channel
+	duplicate bool
+}
+
+func (c unmanagedChannel) suffix() string { return dupSuffix(c.duplicate) }
+
+func dupSuffix(duplicate bool) string {
+	if duplicate {
+		return " (duplicate)"
+	}
+	return ""
+}
+
+// unmanaged returns the observed roles and channels that are not managed, in
+// observed order: those the spec doesn't mention, and later duplicates of ones
+// it does (the first observed object of a name is the managed one). The
+// provisioner role and integration-managed roles are never unmanaged.
+func unmanaged(d Desired, g model.Guild) ([]unmanagedRole, []unmanagedChannel) {
+	wantRole := make(map[string]bool, len(d.Roles))
 	for _, r := range d.Roles {
 		wantRole[r.Name] = true
 	}
+	seen := make(map[string]bool, len(d.Roles))
+	var roles []unmanagedRole
+	for _, r := range g.Roles {
+		duplicate := wantRole[r.Name] && seen[r.Name]
+		seen[r.Name] = true
+		switch {
+		case r.Managed || r.Name == d.ProvisionerRole:
+		case !wantRole[r.Name]:
+			roles = append(roles, unmanagedRole{Role: r})
+		case duplicate:
+			roles = append(roles, unmanagedRole{Role: r, duplicate: true})
+		}
+	}
+
 	wantChannel := make(map[channelKey]bool, len(d.Channels))
 	for _, c := range d.Channels {
 		wantChannel[channelKey{c.Type, c.Name}] = true
 	}
-
-	var roles []model.Role
-	for _, r := range g.Roles {
-		if !r.Managed && !wantRole[r.Name] {
-			roles = append(roles, r)
-		}
-	}
-	var channels []model.Channel
-	for _, c := range g.Channels {
-		if !wantChannel[channelKey{c.Type, c.Name}] {
-			channels = append(channels, c)
+	managed := managedChannels(d, g)
+	var channels []unmanagedChannel
+	for i, c := range g.Channels {
+		k := channelKey{c.Type, c.Name}
+		switch {
+		case !wantChannel[k]:
+			channels = append(channels, unmanagedChannel{Channel: c})
+		case managed[k] != i:
+			channels = append(channels, unmanagedChannel{Channel: c, duplicate: true})
 		}
 	}
 	return roles, channels

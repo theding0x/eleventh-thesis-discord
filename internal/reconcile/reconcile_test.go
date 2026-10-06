@@ -290,15 +290,6 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "position drift",
-			observed: func(t *testing.T) model.Guild {
-				g := converged(d)
-				mutateChannel(&g, model.Text, "general", func(c *model.Channel) { c.Position = 5 })
-				return g
-			},
-			wantActions: []string{"~ update text #general (position)"},
-		},
-		{
 			name: "text topic drift",
 			observed: func(t *testing.T) model.Guild {
 				g := converged(d)
@@ -311,6 +302,23 @@ func TestReconcile(t *testing.T) {
 			name: "channel changes are listed in a fixed order",
 			observed: func(t *testing.T) model.Guild {
 				g := converged(d)
+				mutateChannel(&g, model.Text, "general", func(c *model.Channel) { c.Position = 2 })
+				mutateChannel(&g, model.Text, "contributions", func(c *model.Channel) {
+					c.Position = 1
+					c.Topic = "old"
+					c.Overwrites = nil
+				})
+				return g
+			},
+			wantActions: []string{
+				"~ update text #general (position)",
+				"~ update text #contributions (position, topic, overwrites)",
+			},
+		},
+		{
+			name: "a moved channel is reported as parent, with its other drift",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
 				mutateChannel(&g, model.Text, "contributions", func(c *model.Channel) {
 					c.Parent = "Operations"
 					c.Position = 9
@@ -319,7 +327,7 @@ func TestReconcile(t *testing.T) {
 				})
 				return g
 			},
-			wantActions: []string{"~ update text #contributions (parent, position, topic, overwrites)"},
+			wantActions: []string{"~ update text #contributions (parent, topic, overwrites)"},
 		},
 		{
 			name: "voice topic is ignored",
@@ -490,6 +498,186 @@ func TestReconcile(t *testing.T) {
 				"- delete role Old",
 			},
 			wantUnmanaged: []string{"role Old", "category Stale", "text #old", "voice Lounge"},
+			check: func(t *testing.T, p Plan) {
+				// Deletes carry the observed objects.
+				wantIDs := []string{"x2", "x3", "x1", "r-old"}
+				for i, a := range p.Actions {
+					id := a.Channel.ID
+					if a.Kind == DeleteRole {
+						id = a.Role.ID
+					}
+					if id != wantIDs[i] {
+						t.Errorf("action %d (%s) carries ID %q, want %q", i, a, id, wantIDs[i])
+					}
+				}
+			},
+		},
+		{
+			name: "duplicate channel after the managed one is unmanaged",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				g.Channels = append(g.Channels, model.Channel{ID: "dup-general", Name: "general", Type: model.Text, Parent: "The Collective", Position: 99})
+				return g
+			},
+			wantUnmanaged: []string{"text #general (duplicate)"},
+		},
+		{
+			name: "duplicate channel is pruned by ID",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				g.Channels = append(g.Channels, model.Channel{ID: "dup-general", Name: "general", Type: model.Text, Parent: "The Collective", Position: 99})
+				return g
+			},
+			prune:         true,
+			wantActions:   []string{"- delete text #general"},
+			wantUnmanaged: []string{"text #general (duplicate)"},
+			check: func(t *testing.T, p Plan) {
+				a := p.Actions[0]
+				if a.Kind != DeleteChannel || a.Channel.ID != "dup-general" || a.Channel.ID == "c-general" {
+					t.Errorf("action = %+v, want a delete of the duplicate (ID dup-general), not the managed c-general", a)
+				}
+			},
+		},
+		{
+			name: "the first observed channel of a name is the managed one",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				// A stray #general sits before the real one, in another category.
+				first := model.Channel{ID: "first-general", Name: "general", Type: model.Text, Parent: "Operations", Position: 5, Overwrites: findChannel(t, d, model.Text, "general").Overwrites}
+				g.Channels = append([]model.Channel{first}, g.Channels...)
+				return g
+			},
+			prune:         true,
+			wantActions:   []string{"~ update text #general (parent)", "- delete text #general"},
+			wantUnmanaged: []string{"text #general (duplicate)"},
+			check: func(t *testing.T, p Plan) {
+				if a := p.Actions[1]; a.Channel.ID != "c-general" {
+					t.Errorf("deleted ID = %q, want c-general (the later duplicate)", a.Channel.ID)
+				}
+			},
+		},
+		{
+			name: "duplicate voice channel and category are labelled",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				g.Channels = append(g.Channels,
+					model.Channel{ID: "dup-comms", Name: "Comms", Type: model.Voice, Parent: "The Collective", Position: 99},
+					model.Channel{ID: "dup-ops", Name: "Operations", Type: model.Category, Position: 99},
+				)
+				return g
+			},
+			wantUnmanaged: []string{"voice Comms (duplicate)", "category Operations (duplicate)"},
+		},
+		{
+			name: "duplicate role is unmanaged and does not force a reorder",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				mutateRole(&g, "Probation", func(r *model.Role) { r.Position = 6 })
+				// Sits between Member and Probation: without the exclusion the
+				// order check would see Director, Member, Member, Probation.
+				g.Roles = append(g.Roles, model.Role{ID: "dup-member", Name: "Member", Position: 7})
+				return g
+			},
+			wantUnmanaged: []string{"role Member (duplicate)"},
+		},
+		{
+			name: "duplicate role is pruned by ID",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				mutateRole(&g, "Probation", func(r *model.Role) { r.Position = 6 })
+				g.Roles = append(g.Roles, model.Role{ID: "dup-member", Name: "Member", Position: 7})
+				return g
+			},
+			prune:         true,
+			wantActions:   []string{"- delete role Member"},
+			wantUnmanaged: []string{"role Member (duplicate)"},
+			check: func(t *testing.T, p Plan) {
+				if a := p.Actions[0]; a.Kind != DeleteRole || a.Role.ID != "dup-member" {
+					t.Errorf("action = %+v, want delete of dup-member, not r-Member", a)
+				}
+			},
+		},
+		{
+			name: "the first observed role of a name is the managed one",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				g.Roles = append([]model.Role{{ID: "first-member", Name: "Member", Position: 1, Permissions: 1}}, g.Roles...)
+				return g
+			},
+			prune: true,
+			wantActions: []string{
+				"~ update role Member (color, hoist, permissions)",
+				"~ reorder roles: Director, Member, Probation", // the managed Member sits at the bottom
+				"- delete role Member",
+			},
+			wantUnmanaged: []string{"role Member (duplicate)"},
+			check: func(t *testing.T, p Plan) {
+				if a := p.Actions[2]; a.Role.ID != "r-Member" {
+					t.Errorf("deleted role ID = %q, want r-Member (the later duplicate)", a.Role.ID)
+				}
+			},
+		},
+		{
+			name: "two unwanted channels of one name are both unmanaged",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				g.Channels = append(g.Channels,
+					model.Channel{ID: "old1", Name: "old", Type: model.Text, Parent: "Operations", Position: 1},
+					model.Channel{ID: "old2", Name: "old", Type: model.Text, Parent: "Operations", Position: 2},
+				)
+				return g
+			},
+			prune:         true,
+			wantActions:   []string{"- delete text #old", "- delete text #old"},
+			wantUnmanaged: []string{"text #old", "text #old"},
+			check: func(t *testing.T, p Plan) {
+				if p.Actions[0].Channel.ID != "old1" || p.Actions[1].Channel.ID != "old2" {
+					t.Errorf("deleted IDs = %q, %q, want old1, old2", p.Actions[0].Channel.ID, p.Actions[1].Channel.ID)
+				}
+			},
+		},
+		{
+			name: "an unmanaged stray before the managed channels does not shift their positions",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				for i := range g.Channels {
+					if g.Channels[i].Parent == "The Collective" {
+						g.Channels[i].Position++
+					}
+				}
+				stray := model.Channel{ID: "stray", Name: "stray", Type: model.Text, Parent: "The Collective", Position: 0}
+				g.Channels = append([]model.Channel{stray}, g.Channels...)
+				return g
+			},
+			wantUnmanaged: []string{"text #stray"},
+		},
+		{
+			name: "an unmanaged category among the categories does not shift their positions",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				for i := range g.Channels {
+					if g.Channels[i].Type == model.Category {
+						g.Channels[i].Position++
+					}
+				}
+				stray := model.Channel{ID: "stray-cat", Name: "Stray", Type: model.Category, Position: 0}
+				g.Channels = append([]model.Channel{stray}, g.Channels...)
+				return g
+			},
+			wantUnmanaged: []string{"category Stray"},
+		},
+		{
+			name: "swapped managed channels are position drift",
+			observed: func(t *testing.T) model.Guild {
+				g := converged(d)
+				mutateChannel(&g, model.Text, "general", func(c *model.Channel) { c.Position = 2 })
+				mutateChannel(&g, model.Text, "contributions", func(c *model.Channel) { c.Position = 1 })
+				return g
+			},
+			wantActions: []string{
+				"~ update text #general (position)",
+				"~ update text #contributions (position)",
+			},
 		},
 	}
 
