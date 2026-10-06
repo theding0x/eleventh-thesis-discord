@@ -87,6 +87,25 @@ func TestReconcile(t *testing.T) {
 	d := mustDesired(t)
 	everyoneDefaults := mustParse(t, "view_channel", "send_messages", "read_message_history")
 
+	// An empty guild gets one post per content chunk, channels in desired order.
+	var postActions []string
+	for _, c := range d.Channels {
+		for i := range d.Content[c.Name] {
+			postActions = append(postActions, "+ post message "+strconv.Itoa(i+1)+"/"+strconv.Itoa(len(d.Content[c.Name]))+" in #"+c.Name)
+		}
+	}
+	wantPosts := []string{
+		"+ post message 1/1 in #welcome",
+		"+ post message 1/3 in #constitution",
+		"+ post message 2/3 in #constitution",
+		"+ post message 3/3 in #constitution",
+		"+ post message 1/1 in #open-ledger",
+		"+ post message 1/1 in #apply",
+	}
+	if !reflect.DeepEqual(postActions, wantPosts) {
+		t.Fatalf("computed post actions = %q, want %q", postActions, wantPosts)
+	}
+
 	tests := []struct {
 		name          string
 		observed      func(t *testing.T) model.Guild
@@ -103,7 +122,7 @@ func TestReconcile(t *testing.T) {
 					Roles:               []model.Role{{ID: "r-prov", Name: "Provisioner", Position: 1}},
 				}
 			},
-			wantActions: []string{
+			wantActions: append([]string{
 				"~ update @everyone permissions",
 				"+ create role Director",
 				"+ create role Member",
@@ -129,10 +148,10 @@ func TestReconcile(t *testing.T) {
 				"+ create text #logistics in Operations",
 				"+ create text #vetting in Directorate",
 				"+ create text #directors in Directorate",
-			},
+			}, postActions...),
 			check: func(t *testing.T, p Plan) {
-				if len(p.Actions) != 25 {
-					t.Fatalf("len(Actions) = %d, want 25", len(p.Actions))
+				if len(p.Actions) != 25+len(postActions) {
+					t.Fatalf("len(Actions) = %d, want %d", len(p.Actions), 25+len(postActions))
 				}
 				if a := p.Actions[0]; a.Kind != UpdateEveryone || a.Permissions != d.EveryonePermissions {
 					t.Errorf("first action = %+v, want update-everyone to %b", a, d.EveryonePermissions)
@@ -141,12 +160,21 @@ func TestReconcile(t *testing.T) {
 					t.Errorf("action 4 = %+v, want reorder-roles", a)
 				}
 				// Create actions carry the desired values.
-				for i, a := range p.Actions[5:] {
+				for i, a := range p.Actions[5:25] {
 					if a.Kind != CreateChannel {
 						t.Fatalf("action %d = %v, want create-channel", i+5, a.Kind)
 					}
 					if !reflect.DeepEqual(a.Channel, d.Channels[i]) {
 						t.Errorf("action %d channel = %+v, want %+v", i+5, a.Channel, d.Channels[i])
+					}
+				}
+				// Every content chunk is posted after all the channel actions.
+				for i, a := range p.Actions[25:] {
+					if a.Kind != PostMessage {
+						t.Fatalf("action %d = %v, want post-message", i+25, a.Kind)
+					}
+					if a.Message.ID != "" || a.Message.Content != d.Content[a.Target][a.Index-1] {
+						t.Errorf("action %d message = %+v, want chunk %d of #%s", i+25, a.Message, a.Index, a.Target)
 					}
 				}
 				if a := p.Actions[1]; !reflect.DeepEqual(a.Role, d.Roles[0]) {

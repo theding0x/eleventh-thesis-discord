@@ -482,8 +482,36 @@ func unmanaged(d Desired, g model.Guild) ([]unmanagedRole, []unmanagedChannel) {
 	return roles, channels
 }
 
-// reconcileContent plans the message actions for channels with content.
-// Task 6 fills this in.
+// reconcileContent plans the bot's own messages in each text channel that has
+// content, in d.Channels order. Observed messages are matched to chunks by
+// position: a differing one is edited, missing chunks are posted in order and
+// surplus messages are deleted, after the edits and posts. An entry with no
+// chunks therefore deletes every bot message in the channel. g.BotMessages only
+// holds the bot's own messages, so other users' messages are never touched.
 func reconcileContent(d Desired, g model.Guild) []Action {
-	return nil
+	var actions []Action
+	for _, c := range d.Channels {
+		if c.Type != model.Text {
+			continue
+		}
+		chunks, ok := d.Content[c.Name]
+		if !ok {
+			continue
+		}
+		observed := g.BotMessages[c.Name]
+		total := len(chunks)
+
+		for i, chunk := range chunks {
+			switch {
+			case i >= len(observed):
+				actions = append(actions, Action{Kind: PostMessage, Message: model.Message{Content: chunk}, Target: c.Name, Index: i + 1, Total: total})
+			case observed[i].Content != chunk:
+				actions = append(actions, Action{Kind: EditMessage, Message: model.Message{ID: observed[i].ID, Content: chunk}, Target: c.Name, Index: i + 1, Total: total})
+			}
+		}
+		for i := total; i < len(observed); i++ {
+			actions = append(actions, Action{Kind: DeleteMessage, Message: model.Message{ID: observed[i].ID}, Target: c.Name, Index: i + 1, Total: total})
+		}
+	}
+	return actions
 }
