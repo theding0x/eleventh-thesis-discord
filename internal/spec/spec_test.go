@@ -145,6 +145,14 @@ func TestValidate(t *testing.T) {
 		{"topic too long", func(t *testing.T, s *Spec) {
 			channel(t, category(t, s, "Operations"), "logistics").Topic = strings.Repeat("x", 1025)
 		}, []string{"topic"}},
+		{"text channel after voice channel", func(t *testing.T, s *Spec) {
+			c := category(t, s, "The Collective") // Comms (voice) is its last channel
+			c.Channels = append(c.Channels, Channel{Name: "late-text"})
+		}, []string{`category "The Collective"`, `text channel "late-text"`, `listed after voice channel "Comms"`, "list voice channels last"}},
+		{"voice channel listed before a text channel", func(t *testing.T, s *Spec) {
+			c := category(t, s, "Operations")
+			c.Channels = []Channel{{Name: "Lounge", Type: "voice"}, {Name: "logistics"}}
+		}, []string{`category "Operations"`, `text channel "logistics"`, `listed after voice channel "Lounge"`}},
 		{"several problems", func(t *testing.T, s *Spec) {
 			s.GuildID = "abc"
 			s.Roles[0].Color = "red"

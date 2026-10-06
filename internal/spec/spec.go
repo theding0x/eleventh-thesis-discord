@@ -186,6 +186,7 @@ func Validate(s *Spec, baseDir string) error {
 		}
 		checkAccess(fmt.Sprintf("category %q", c.Name), c.Access)
 
+		firstVoice := "" // the first voice channel listed in this category
 		for _, ch := range c.Channels {
 			where := fmt.Sprintf("channel %q in category %q", ch.Name, c.Name)
 			kind := ch.Type
@@ -208,7 +209,16 @@ func Validate(s *Spec, baseDir string) error {
 				if !textNameRe.MatchString(ch.Name) {
 					add("%s: text channel names must match %s", where, textNameRe)
 				}
+				// Discord always shows text channels before voice channels in a
+				// category, so a text channel listed after a voice channel could
+				// never reach its position and would show as drift on every run.
+				if firstVoice != "" {
+					add("category %q: text channel %q is listed after voice channel %q; Discord shows text channels first, so list voice channels last", c.Name, ch.Name, firstVoice)
+				}
 			case TypeVoice:
+				if firstVoice == "" {
+					firstVoice = ch.Name
+				}
 				if n := utf8.RuneCountInString(ch.Name); n < 1 || n > maxName {
 					add("%s: name must be 1-%d characters, got %d", where, maxName, n)
 				}
