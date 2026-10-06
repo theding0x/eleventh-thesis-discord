@@ -69,34 +69,11 @@ func (f *Fake) begin(method string) error {
 	return nil
 }
 
-// idLess orders IDs of one kind (a prefix and a counter) numerically.
-func idLess(a, b string) bool {
-	if len(a) != len(b) {
-		return len(a) < len(b)
-	}
-	return a < b
-}
-
 // normalize sorts roles by (Position descending, ID ascending) and channels by
-// (Parent, Position, ID ascending).
+// (Parent, Position, ID ascending); see order.go.
 func (f *Fake) normalize() {
-	roles := f.Guild.Roles
-	sort.SliceStable(roles, func(i, j int) bool {
-		if roles[i].Position != roles[j].Position {
-			return roles[i].Position > roles[j].Position
-		}
-		return idLess(roles[i].ID, roles[j].ID)
-	})
-	chans := f.Guild.Channels
-	sort.SliceStable(chans, func(i, j int) bool {
-		if chans[i].Parent != chans[j].Parent {
-			return chans[i].Parent < chans[j].Parent
-		}
-		if chans[i].Position != chans[j].Position {
-			return chans[i].Position < chans[j].Position
-		}
-		return idLess(chans[i].ID, chans[j].ID)
-	})
+	sortRoles(f.Guild.Roles)
+	sortChannels(f.Guild.Channels)
 }
 
 func copyOverwrites(in []model.Overwrite) []model.Overwrite {
