@@ -31,9 +31,9 @@ const (
 type Action struct {
 	Kind        Kind
 	Permissions int64         // UpdateEveryone: desired @everyone permissions
-	Role        model.Role    // Create/UpdateRole: desired values; DeleteRole: Name
+	Role        model.Role    // Create/UpdateRole: desired values; DeleteRole: the observed role (with its ID)
 	RoleOrder   []string      // ReorderRoles: managed role names, highest first
-	Channel     model.Channel // Create/Update/DeleteChannel: desired values (Delete: Name, Type)
+	Channel     model.Channel // Create/UpdateChannel: desired values; DeleteChannel: the observed channel (with its ID)
 	Message     model.Message // Edit/DeleteMessage: ID; Post/Edit: Content
 	Target      string        // message actions: channel name
 	Index       int           // message actions: 1-based chunk number
@@ -91,7 +91,7 @@ func (a Action) String() string {
 // plus the objects the spec doesn't mention.
 type Plan struct {
 	Actions   []Action
-	Unmanaged []string // "role X", "category X", "text #x", "voice X"
+	Unmanaged []string // "role X", "category X", "text #x", "voice X"; later same-name objects end in " (duplicate)"
 }
 
 // String renders the plan: one line per action, then the unmanaged objects
@@ -126,7 +126,7 @@ func Check(g model.Guild, d Desired) error {
 		}
 	}
 	if prov == nil {
-		return fmt.Errorf("provisioner role %q not found in the server: invite the bot with that role, then drag the bot's role above the roles the spec manages", d.ProvisionerRole)
+		return fmt.Errorf("no role named %q: Discord names the bot's role after the bot — rename it (Server Settings → Roles) or set provisioner_role in server.yaml", d.ProvisionerRole)
 	}
 
 	var tooHigh []string
@@ -262,12 +262,9 @@ func roleOrderDrifted(d Desired, g model.Guild) bool {
 		}
 		below = append(below, r)
 	}
-	sort.Slice(below, func(i, j int) bool {
-		if below[i].Position != below[j].Position {
-			return below[i].Position > below[j].Position
-		}
-		return below[i].Name < below[j].Name
-	})
+	// Stable on Position only: g.Roles is in Observe order (ID ascending among
+	// equal positions), and ties must keep that order.
+	sort.SliceStable(below, func(i, j int) bool { return below[i].Position > below[j].Position })
 
 	if len(below) < len(d.Roles) {
 		return true

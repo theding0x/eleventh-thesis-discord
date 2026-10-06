@@ -776,8 +776,13 @@ func TestCheckMissingProvisioner(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error when the provisioner role does not exist")
 	}
-	if !strings.Contains(err.Error(), d.ProvisionerRole) || !strings.Contains(err.Error(), "drag the bot's role above") {
-		t.Errorf("err = %v", err)
+	for _, want := range []string{`no role named "` + d.ProvisionerRole + `"`, "Discord names the bot's role after the bot", "provisioner_role"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "invite the bot") {
+		t.Errorf("err = %v, must not advise inviting the bot with a role", err)
 	}
 }
 
@@ -867,5 +872,58 @@ func TestPlanString(t *testing.T) {
 	}
 	if got := (Plan{}).String(); got != "no changes" {
 		t.Errorf("empty: %q", got)
+	}
+}
+
+// tiedRoles builds roles in Observe order (Position descending, then numeric
+// ID): the provisioner at 10, Director at 9, Member at 8, then two roles that
+// share position 7.
+func tiedRoles(d Desired, first, second model.Role) model.Guild {
+	g := converged(d)
+	g.Roles = []model.Role{
+		{ID: "100", Name: d.ProvisionerRole, Position: 10},
+		{ID: "101", Name: "Director", Position: 9, Color: d.Roles[0].Color, Hoist: d.Roles[0].Hoist, Mentionable: d.Roles[0].Mentionable, Permissions: d.Roles[0].Permissions},
+		{ID: "102", Name: "Member", Position: 8, Color: d.Roles[1].Color, Hoist: d.Roles[1].Hoist},
+		first,
+		second,
+	}
+	return g
+}
+
+func hasReorder(p Plan) bool {
+	for _, a := range p.Actions {
+		if a.Kind == ReorderRoles {
+			return true
+		}
+	}
+	return false
+}
+
+// A tie in Position keeps the observed order (ID ascending), not name order:
+// Probation (103) is observed before the stray Aaa (104), so the spec order
+// holds and no reorder is planned.
+func TestRoleOrderTieKeepsObservedOrder(t *testing.T) {
+	d := mustDesired(t)
+	probation := model.Role{ID: "103", Name: "Probation", Position: 7, Color: d.Roles[2].Color, Hoist: d.Roles[2].Hoist}
+	g := tiedRoles(d, probation, model.Role{ID: "104", Name: "Aaa", Position: 7})
+	if roleOrderDrifted(d, g) {
+		t.Fatal("roleOrderDrifted = true, want false: Probation is observed before Aaa")
+	}
+	if p := Reconcile(d, g, false); hasReorder(p) {
+		t.Fatalf("plan = %q, want no reorder", strs(p))
+	}
+}
+
+// The same tie the other way round (the stray has the lower ID) does break the
+// spec order, so a reorder is planned.
+func TestRoleOrderTieBreaksOrder(t *testing.T) {
+	d := mustDesired(t)
+	probation := model.Role{ID: "104", Name: "Probation", Position: 7, Color: d.Roles[2].Color, Hoist: d.Roles[2].Hoist}
+	g := tiedRoles(d, model.Role{ID: "103", Name: "Aaa", Position: 7}, probation)
+	if !roleOrderDrifted(d, g) {
+		t.Fatal("roleOrderDrifted = false, want true: the stray Aaa is observed before Probation")
+	}
+	if p := Reconcile(d, g, false); !hasReorder(p) {
+		t.Fatalf("plan = %q, want a reorder", strs(p))
 	}
 }

@@ -12,9 +12,10 @@ import (
 // by name, except where the argument carries an ID.
 type Client interface {
 	// Observe reads the guild. Roles are ordered by Position descending, then ID
-	// ascending; Channels by Parent, Position, then ID ascending; so the first
-	// object with a given name is well defined. BotMessages holds the bot's own
-	// messages, oldest first, for the requested content channels only.
+	// ascending (numeric); Channels by Parent, Position, then ID ascending
+	// (numeric); so the first object with a given name is well defined.
+	// BotMessages holds the bot's own messages, oldest first, for the requested
+	// content channels only.
 	Observe(ctx context.Context, contentChannels []string) (model.Guild, error)
 	// UpdateEveryone sets @everyone's server-wide permissions.
 	UpdateEveryone(ctx context.Context, permissions int64) error

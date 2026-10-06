@@ -36,6 +36,11 @@ type Live struct {
 
 	roleIDs    map[string]string  // role name → ID of the first role with that name
 	channelIDs map[chanKey]string // (type, name) → ID of the first channel with that key
+
+	// everyone is @everyone's permissions as of the last Observe; everyoneKnown is
+	// false until then. A 403 on UpdateEveryone uses it to name the offending bits.
+	everyone      int64
+	everyoneKnown bool
 }
 
 var _ Client = (*Live)(nil)
@@ -212,10 +217,10 @@ func observeChannels(in []*discordgo.Channel, guildID string, roleNames map[stri
 }
 
 // rolesFromDiscord maps Discord roles to the model, in input order. The role
-// whose ID equals the guild ID is @everyone: it is left out of the result and
-// its permissions are returned separately.
-func rolesFromDiscord(roles []*discordgo.Role, guildID string) (managed []model.Role, everyone int64) {
-	for _, r := range roles {
+// whose ID equals the guild ID is @everyone: it is left out of the returned
+// roles and its permissions are returned separately.
+func rolesFromDiscord(in []*discordgo.Role, guildID string) (roles []model.Role, everyone int64) {
+	for _, r := range in {
 		if r == nil {
 			continue
 		}
@@ -223,12 +228,12 @@ func rolesFromDiscord(roles []*discordgo.Role, guildID string) (managed []model.
 			everyone = r.Permissions
 			continue
 		}
-		managed = append(managed, model.Role{
+		roles = append(roles, model.Role{
 			ID: r.ID, Name: r.Name, Color: r.Color, Hoist: r.Hoist, Mentionable: r.Mentionable,
 			Permissions: r.Permissions, Position: r.Position, Managed: r.Managed,
 		})
 	}
-	return managed, everyone
+	return roles, everyone
 }
 
 // roleNamesByID maps every role ID, including @everyone's, to its name.
@@ -455,6 +460,7 @@ func (l *Live) Observe(ctx context.Context, contentChannels []string) (model.Gui
 
 	l.roleIDs = buildRoleIDs(roles)
 	l.channelIDs = buildChannelIDs(channels)
+	l.everyone, l.everyoneKnown = everyone, true
 
 	g := model.Guild{
 		EveryonePermissions: everyone,
@@ -510,12 +516,21 @@ func (l *Live) ownHistory(ctx context.Context, channelID string) ([]model.Messag
 
 // UpdateEveryone sets @everyone's server-wide permissions. @everyone is the role
 // whose ID equals the guild ID.
+//
+// Discord does not let a bot change permissions it does not hold, and a new
+// server's @everyone holds some the bot lacks, so the first apply can get a 403
+// here. That case gets a message naming the bits the user has to change by hand
+// (see the launch checklist). It is checked before the error is flattened.
 func (l *Live) UpdateEveryone(ctx context.Context, permissions int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	p := permissions
 	_, err := l.s.GuildRoleEdit(l.guildID, l.guildID, &discordgo.RoleParams{Permissions: &p}, opts(ctx)...)
+	if err != nil && ctx.Err() == nil && isForbidden(err) {
+		msg := everyoneForbiddenMessage(l.everyone, permissions, l.everyoneKnown)
+		return fmt.Errorf("discord: update @everyone: %w", scrubToken(errors.New(msg), l.token))
+	}
 	return l.fail(ctx, "update @everyone", err)
 }
 
