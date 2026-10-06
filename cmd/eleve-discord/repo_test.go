@@ -135,7 +135,7 @@ func TestRepoServerYAML(t *testing.T) {
 	}
 }
 
-func TestContentFilesAreLFAndVerbatim(t *testing.T) {
+func TestContentFilesAreLFWithTrailingNewline(t *testing.T) {
 	cases := []struct{ path, heading string }{
 		{"../../content/welcome.md", "# Eleventh Thesis [ELEVE]"},
 		{"../../content/apply.md", "# How to join"},

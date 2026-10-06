@@ -11,7 +11,7 @@ Build: `go build -o eleve-discord ./cmd/eleve-discord`
 | `eleve-discord validate [-f server.yaml]` | Offline checks | 0 ok, 1 invalid |
 | `eleve-discord plan [-f …] [--prune]` | Reads the guild and prints actions plus unmanaged objects (with `--prune`, also the deletions) | 0 no changes, 2 changes, 1 error |
 | `eleve-discord apply [-f …] [--prune]` | Plans, then executes in order; stops at the first failed action and reports what was done | 0 ok, 1 error |
-| `eleve-discord invite-url -client-id <id>` | Prints the OAuth2 URL that invites the bot with exactly the permissions in spec §2.6 | 0 |
+| `eleve-discord invite-url -client-id <id>` | Prints the OAuth2 URL that invites the bot with exactly the permissions in spec §2.6 | 0 ok, 1 error |
 
 `plan` and `apply` read the bot token from the environment variable `DISCORD_BOT_TOKEN` and nowhere else. It is never a flag and is never printed.
 
@@ -41,5 +41,5 @@ Deleting roles or channels is a deliberate local act: run `eleve-discord apply -
 - Roles are assigned by hand.
 - Unmanaged objects are reported, never deleted without `--prune`.
 - Matching is by name, so a rename shows as a create plus an unmanaged object.
-- Channel positions are only guaranteed for the channels the tool writes when stray channels sit inside a managed category. Run `plan` after `apply` (launch step 4) and check it reports no changes.
+- Channel order is checked only among managed channels. An unmanaged channel inside a managed category can sit anywhere among them.
 - EVE SSO verification, the ledger feed and Discord Community/Onboarding are v2 (spec §5).
