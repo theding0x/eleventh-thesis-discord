@@ -1,8 +1,10 @@
 # Eleventh Thesis: Discord Server, Design Spec
 
-*Drafted 6 October 2026. Status: **approved** 6 October 2026 (revision 3). Implementation plan: `docs/superpowers/plans/2026-10-06-discord-provisioner.md`. The corp's founding plan deferred Discord ("Discord later"); this spec ends that deferral.*
+*Drafted 6 October 2026. Status: **approved** 6 October 2026 (revision 4). Implementation plan: `docs/superpowers/plans/2026-10-06-discord-provisioner.md`. The corp's founding plan deferred Discord ("Discord later"); this spec ends that deferral.*
 
 *Revision 3 (6 October 2026): the provisioner manages @everyone's server-wide permissions, because Discord's defaults (Send Messages and others) would otherwise get past every `read` and `none` access level (§1.1, §2.2, §2.3). The bot's permission set grows from 14 to 16 (§2.6). The chunker keeps headings of every level attached to the text that follows, and wraps tables in code blocks because Discord doesn't render Markdown tables (§2.4). New launch step for system messages (§4).*
+
+*Revision 4 (6 October 2026): the launch checklist gains an @everyone step, a bot-naming note and an unmanaged-objects note after the final review (§4).*
 
 ## 0. Intent
 
@@ -261,15 +263,16 @@ If an entry looks wrong, say so in #contributions. That is what the ledger is fo
 ## 4. Launch checklist
 
 1. Create the server with Aaron's own Discord account, which stays its owner. Settings: verification level *Medium*; 2FA required for moderation.
-2. Create the Discord application and bot (Developer Portal). Put the token in the GitHub environment `discord` and in the local shell only.
+2. Create the Discord application and bot (Developer Portal). **Name the application `Provisioner`:** Discord names a bot's managed role after the bot, and `server.yaml` expects that role to be called `Provisioner` (if you pick another name, set `provisioner_role` in `server.yaml` to the role's exact name). Put the token in the GitHub environment `discord` and in the local shell only.
 3. Put the server's ID in `guild_id`; open the URL from `eleve-discord invite-url`; drag the bot's role to the top.
-4. Run `plan` locally and review it, then `apply`, then `plan` again, which must report no changes.
-5. System messages: Discord's default `#general` is matched by name and moved into The Collective, where visitors can't see it, but it still receives Discord's join notices. In Server Settings → Overview, set the System Messages channel to `#public-chat` or turn it off.
-6. Manual check: as a visitor ("View Server As Role" or a second account), confirm only the Front Door is visible and that only `#apply` and `#public-chat` accept messages; repeat for Probation (can read but not post in `#announcements`) and Member.
-7. Assign `Director` to Aaron's account.
-8. Create a permanent invite to `#welcome`. (Create Invite is no longer an @everyone permission, so only the owner and the bot can make invites.)
-9. Update the corp's existing texts (forum post, welcome mail, public channel MOTD) to mention Discord. Hand the invite out from the in-game public channel until the server has people to answer recruits.
-10. Log the launch in the corp's founding plan.
+4. In Server Settings → Roles → @everyone, turn off every permission except Change Nickname and Use Voice Activity. Discord's defaults include permissions the bot does not hold (Create Invite, Mention @everyone, Use External Emojis, …), and a bot cannot change a permission it doesn't have. If `apply` stops at its first action with a 403 on @everyone, this step was skipped.
+5. Run `plan` locally and review it, then `apply`, then `plan` again, which must report no changes. Objects Discord created by default (its `Text Channels` and `Voice Channels` categories and the voice channel `General`) are listed as `unmanaged:` — that is not a change (exit code 0); delete them by hand or with `apply --prune`.
+6. System messages: Discord's default `#general` is matched by name and moved into The Collective, where visitors can't see it, but it still receives Discord's join notices. In Server Settings → Overview, set the System Messages channel to `#public-chat` or turn it off.
+7. Manual check: as a visitor ("View Server As Role" or a second account), confirm only the Front Door is visible and that only `#apply` and `#public-chat` accept messages; repeat for Probation (can read but not post in `#announcements`) and Member.
+8. Assign `Director` to Aaron's account.
+9. Create a permanent invite to `#welcome`. (Create Invite is no longer an @everyone permission, so only the owner and the bot can make invites.)
+10. Update the corp's existing texts (forum post, welcome mail, public channel MOTD) to mention Discord. Hand the invite out from the in-game public channel until the server has people to answer recruits.
+11. Log the launch in the corp's founding plan.
 
 ---
 
