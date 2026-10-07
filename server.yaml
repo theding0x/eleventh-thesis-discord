@@ -1,5 +1,5 @@
-guild_id: "0"                     # placeholder: the real server ID (not secret) is filled in at launch step 3
-provisioner_role: Provisioner     # the bot's managed role; never edited, must stay highest
+guild_id: "1557075735665975306"   # the server's ID (not secret)
+provisioner_role: Eleve           # the bot's managed role (Discord names it after the bot); never edited, must stay highest
 everyone_permissions: [change_nickname, use_voice_activity]   # @everyone's server-wide permissions, set exactly
 
 access_levels:                    # named bundles → Discord permission flags

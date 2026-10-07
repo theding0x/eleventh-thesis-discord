@@ -9,14 +9,21 @@ import (
 
 	"github.com/theding0x/eleventh-thesis-discord/internal/discord"
 	"github.com/theding0x/eleventh-thesis-discord/internal/model"
+	"github.com/theding0x/eleventh-thesis-discord/internal/spec"
 )
 
 // brandNewServer returns a Fake that looks like a Discord server that was just
-// created: the provisioner role, Discord's default @everyone permissions and its
-// default channels (the two categories, #general under Text Channels and the
-// voice channel General under Voice Channels).
-func brandNewServer() *discord.Fake {
-	f := discord.NewFake("Provisioner")
+// created: the provisioner role (named as the repo's server.yaml names it),
+// Discord's default @everyone permissions and its default channels (the two
+// categories, #general under Text Channels and the voice channel General under
+// Voice Channels).
+func brandNewServer(t *testing.T) *discord.Fake {
+	t.Helper()
+	s, err := spec.Load(repoSpec)
+	if err != nil {
+		t.Fatalf("load %s: %v", repoSpec, err)
+	}
+	f := discord.NewFake(s.ProvisionerRole)
 	f.Guild.Channels = append(f.Guild.Channels,
 		model.Channel{ID: "c900", Name: "Text Channels", Type: model.Category, Position: 0},
 		model.Channel{ID: "c901", Name: "Voice Channels", Type: model.Category, Position: 1},
@@ -59,7 +66,7 @@ func findChannel(t *testing.T, f *discord.Fake, typ model.ChannelType, name stri
 // applyRepoToNewServer applies the repo's spec to a brand-new server.
 func applyRepoToNewServer(t *testing.T) *discord.Fake {
 	t.Helper()
-	f := brandNewServer()
+	f := brandNewServer(t)
 	code, stdout, stderr := runRepo(f, "apply")
 	if code != 0 || stderr != "" {
 		t.Fatalf("apply: code=%d stderr=%q stdout=%q", code, stderr, stdout)
@@ -68,7 +75,7 @@ func applyRepoToNewServer(t *testing.T) *discord.Fake {
 }
 
 func TestRepoEndToEndFromNewServer(t *testing.T) {
-	f := brandNewServer()
+	f := brandNewServer(t)
 
 	code, stdout, stderr := runRepo(f, "plan")
 	if code != 2 || stderr != "" {
