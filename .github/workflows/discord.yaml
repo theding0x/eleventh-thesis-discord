@@ -1,0 +1,109 @@
+name: discord
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/eleve-discord" ./cmd/eleve-discord
+      - name: Validate server.yaml
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/eleve-discord" validate
+
+  # Exit code 2 from `plan` means "changes pending", which is a successful run
+  # here; only 0 and 2 pass. The binary is built and run directly because
+  # `go run` reports every non-zero exit of the program as 1, which would turn
+  # exit 2 into a failure.
+  plan:
+    needs: test
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: discord
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/eleve-discord" ./cmd/eleve-discord
+      - name: Plan
+        shell: bash
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +e
+          "$RUNNER_TEMP/eleve-discord" plan >"$RUNNER_TEMP/plan.out" 2>"$RUNNER_TEMP/plan.err"
+          rc=$?
+          set -e
+          {
+            echo "### Discord plan"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/plan.out" "$RUNNER_TEMP/plan.err"
+            echo '```'
+            echo
+            echo "Exit code: $rc (0 = no changes, 2 = changes, anything else = failure)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/plan.out"
+          cat "$RUNNER_TEMP/plan.err" >&2
+          echo "plan exit code: $rc"
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            exit 1
+          fi
+
+  apply:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: discord
+    concurrency:
+      group: discord-apply
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/eleve-discord" ./cmd/eleve-discord
+      - name: Apply
+        shell: bash
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/eleve-discord" apply

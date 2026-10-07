@@ -1,0 +1,45 @@
+guild_id: "1557075735665975306"   # the server's ID (not secret)
+provisioner_role: Eleve           # the bot's managed role (Discord names it after the bot); never edited, must stay highest
+everyone_permissions: [change_nickname, use_voice_activity]   # @everyone's server-wide permissions, set exactly
+
+access_levels:                    # named bundles → Discord permission flags
+  none:  {deny:  [view_channel]}
+  read:  {allow: [view_channel, read_message_history]}
+  post:  {allow: [view_channel, read_message_history, send_messages, add_reactions, attach_files, embed_links]}
+  voice: {allow: [view_channel, connect, speak]}
+
+roles:                            # order = hierarchy, highest first, all below provisioner_role
+  - {name: Director,  color: "#B22222", hoist: true, mentionable: true,
+     permissions: [manage_roles, manage_messages, kick_members, ban_members, moderate_members]}
+  - {name: Member,    color: "#C0C0C0", hoist: true}
+  - {name: Probation, color: "#808080", hoist: true}
+
+categories:                       # order = position
+  - name: Front Door
+    access: {"@everyone": read}
+    channels:
+      - {name: welcome,       content: content/welcome.md}
+      - {name: constitution,  content: content/constitution.md}
+      - {name: open-ledger,   content: content/open-ledger.md}
+      - {name: apply,         content: content/apply.md, access: {"@everyone": post}}
+      - {name: public-chat,   access: {"@everyone": post}}
+  - name: The Collective
+    access: {"@everyone": none, Probation: post, Member: post, Director: post}
+    channels:
+      - {name: announcements, access: {Probation: read, Member: read}}
+      - {name: general}
+      - {name: contributions,  topic: "Deliveries, consignment queue and ledger questions."}
+      - {name: production}
+      - {name: pi-and-mining}
+      - {name: fits-and-skills}
+      - {name: amendments,     topic: "Discussion only. Formal proposals in game: corp channel or mail to the CEO (Art. XII.1)."}
+      - {name: Comms, type: voice, access: {Probation: voice, Member: voice, Director: voice}}
+  - name: Operations
+    access: {"@everyone": none, Member: post, Director: post}
+    channels:
+      - {name: logistics}
+  - name: Directorate
+    access: {"@everyone": none, Director: post}
+    channels:
+      - {name: vetting,   topic: "Applicant data and security only. Decisions go to #announcements."}
+      - {name: directors}
